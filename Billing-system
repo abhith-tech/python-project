@@ -1,4 +1,7 @@
-# Billing Management System
+#Billing Management System
+
+import tkinter as tk
+from tkinter import ttk, messagebox
 
 products = {
     1: {"name": "Pen", "price": 10},
@@ -9,65 +12,140 @@ products = {
 
 cart = []
 
-def show_products():
-    print("\nAvailable Products:")
-    print("ID\tProduct\t\tPrice")
-    for pid, details in products.items():
-        print(f"{pid}\t{details['name']}\t\t{details['price']}")
 
-def add_to_cart():
-    pid = int(input("Enter Product ID: "))
-    if pid in products:
-        qty = int(input("Enter Quantity: "))
+def refresh_products(tree):
+    for i in tree.get_children():
+        tree.delete(i)
+    for pid, details in products.items():
+        tree.insert("", "end", text=str(pid), values=(details["name"], details["price"]))
+
+
+def refresh_cart(tree):
+    for i in tree.get_children():
+        tree.delete(i)
+    for idx, item in enumerate(cart, 1):
+        amount = item["price"] * item["quantity"]
+        tree.insert("", "end", text=str(idx), values=(item["name"], item["quantity"], item["price"], amount))
+
+
+def add_to_cart_gui(prod_tree, cart_tree, qty_var):
+    sel = prod_tree.selection()
+    if not sel:
+        messagebox.showwarning("Select product", "Please select a product to add.")
+        return
+    try:
+        qty = int(qty_var.get())
+        if qty <= 0:
+            raise ValueError
+    except Exception:
+        messagebox.showerror("Invalid quantity", "Enter a valid positive integer quantity.")
+        return
+
+    pid = int(prod_tree.item(sel[0])["text"])
+    prod = products.get(pid)
+    if prod:
         cart.append({
-            "name": products[pid]["name"],
-            "price": products[pid]["price"],
+            "name": prod["name"],
+            "price": prod["price"],
             "quantity": qty
         })
-        print("Product added to cart.")
-    else:
-        print("Invalid Product ID.")
+        refresh_cart(cart_tree)
+        messagebox.showinfo("Added", f"Added {qty} x {prod['name']} to cart.")
 
-def generate_bill():
-    print("\n----- BILL RECEIPT -----")
+
+def generate_bill_gui():
+    if not cart:
+        messagebox.showinfo("Cart empty", "Your cart is empty.")
+        return
     total = 0
-    print("Product\tQty\tPrice\tAmount")
+    lines = []
+    lines.append("----- BILL RECEIPT -----\n")
+    lines.append(f"{"Product":<20}{"Qty":>5}{"Price":>10}{"Amount":>12}\n")
     for item in cart:
         amount = item["price"] * item["quantity"]
         total += amount
-        print(f"{item['name']}\t{item['quantity']}\t{item['price']}\t{amount}")
+        lines.append(f"{item['name']:<20}{item['quantity']:>5}{item['price']:>10}{amount:>12}\n")
 
-    tax = total * 0.05  # 5% tax
+    tax = total * 0.05
     grand_total = total + tax
+    lines.append("\n")
+    lines.append(f"Subtotal: {total:.2f}\n")
+    lines.append(f"Tax (5%): {tax:.2f}\n")
+    lines.append(f"Grand Total: {grand_total:.2f}\n")
+    lines.append("------------------------")
 
-    print("\nSubtotal:", total)
-    print("Tax (5%):", tax)
-    print("Grand Total:", grand_total)
-    print("------------------------")
+    bill_win = tk.Toplevel()
+    bill_win.title("Bill Receipt")
+    text = tk.Text(bill_win, width=60, height=20)
+    text.pack(fill="both", expand=True)
+    text.insert("1.0", "".join(lines))
+    text.config(state="disabled")
 
-def main():
-    while True:
-        print("\nBilling Management System")
-        print("1. Show Products")
-        print("2. Add to Cart")
-        print("3. Generate Bill")
-        print("4. Exit")
 
-        choice = input("Enter your choice: ")
+def build_gui():
+    root = tk.Tk()
+    root.title("Billing Management System")
 
-        if choice == "1":
-            show_products()
-        elif choice == "2":
-            add_to_cart()
-        elif choice == "3":
-            if cart:
-                generate_bill()
-            else:
-                print("Cart is empty.")
-        elif choice == "4":
-            print("Thank you for using the system.")
-            break
-        else:
-            print("Invalid choice.")
+    mainframe = ttk.Frame(root, padding=10)
+    mainframe.pack(fill="both", expand=True)
 
-main()
+    # Products
+    prod_frame = ttk.LabelFrame(mainframe, text="Products", padding=8)
+    prod_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
+
+    prod_tree = ttk.Treeview(prod_frame, columns=("name", "price"), show="tree headings")
+    prod_tree.heading("name", text="Product")
+    prod_tree.heading("price", text="Price")
+    prod_tree.column("name", width=150)
+    prod_tree.column("price", width=60, anchor="e")
+    prod_tree.pack(side="left", fill="both", expand=True)
+
+    prod_scroll = ttk.Scrollbar(prod_frame, orient="vertical", command=prod_tree.yview)
+    prod_tree.configure(yscroll=prod_scroll.set)
+    prod_scroll.pack(side="right", fill="y")
+
+    # Controls
+    ctrl_frame = ttk.Frame(mainframe, padding=8)
+    ctrl_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=5)
+
+    ttk.Label(ctrl_frame, text="Quantity:").pack(side="left")
+    qty_var = tk.StringVar(value="1")
+    qty_spin = ttk.Spinbox(ctrl_frame, from_=1, to=100, textvariable=qty_var, width=5)
+    qty_spin.pack(side="left", padx=4)
+
+    add_btn = ttk.Button(ctrl_frame, text="Add to Cart", command=lambda: add_to_cart_gui(prod_tree, cart_tree, qty_var))
+    add_btn.pack(side="left", padx=4)
+
+    bill_btn = ttk.Button(ctrl_frame, text="Generate Bill", command=generate_bill_gui)
+    bill_btn.pack(side="left", padx=4)
+
+    exit_btn = ttk.Button(ctrl_frame, text="Exit", command=root.destroy)
+    exit_btn.pack(side="right", padx=4)
+
+    # Cart
+    cart_frame = ttk.LabelFrame(mainframe, text="Cart", padding=8)
+    cart_frame.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=5, pady=5)
+
+    cart_tree = ttk.Treeview(cart_frame, columns=("name", "qty", "price", "amount"), show="headings")
+    cart_tree.heading("name", text="Product")
+    cart_tree.heading("qty", text="Qty")
+    cart_tree.heading("price", text="Price")
+    cart_tree.heading("amount", text="Amount")
+    cart_tree.column("name", width=150)
+    cart_tree.pack(fill="both", expand=True)
+
+    # layout weights
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+    mainframe.columnconfigure(0, weight=1)
+    mainframe.columnconfigure(1, weight=1)
+    mainframe.rowconfigure(0, weight=1)
+
+    refresh_products(prod_tree)
+    refresh_cart(cart_tree)
+
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    build_gui()
