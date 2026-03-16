@@ -1,0 +1,352 @@
+import tkinter as tk
+import requests
+import threading
+from datetime import datetime
+
+# ── Open-Meteo endpoints ──────────────────────────────────────────────────────
+GEO_URL     = "https://geocoding-api.open-meteo.com/v1/search"
+WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
+
+# ── Monochrome palette ────────────────────────────────────────────────────────
+BG          = "#ffffff"
+BG2         = "#f5f5f5"
+BG3         = "#ebebeb"
+TEXT_PRI    = "#111111"
+TEXT_SEC    = "#555555"
+TEXT_MUTED  = "#999999"
+DIVIDER     = "#dddddd"
+BLACK       = "#111111"
+WHITE       = "#ffffff"
+
+# ── WMO code map ──────────────────────────────────────────────────────────────
+WMO_MAP = {
+    0:  "Clear Sky",          1:  "Mainly Clear",
+    2:  "Partly Cloudy",      3:  "Overcast",
+    45: "Foggy",              48: "Icy Fog",
+    51: "Light Drizzle",      53: "Drizzle",
+    55: "Heavy Drizzle",      61: "Slight Rain",
+    63: "Moderate Rain",      65: "Heavy Rain",
+    71: "Slight Snow",        73: "Moderate Snow",
+    75: "Heavy Snow",         77: "Snow Grains",
+    80: "Slight Showers",     81: "Moderate Showers",
+    82: "Violent Showers",    85: "Snow Showers",
+    86: "Heavy Snow Showers", 95: "Thunderstorm",
+    96: "Thunderstorm+Hail",  99: "Thunderstorm+Hail",
+}
+
+def wmo_desc(code):
+    return WMO_MAP.get(code, "Unknown")
+
+# ── App ───────────────────────────────────────────────────────────────────────
+class WeatherApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Weather")
+        self.geometry("420x580")
+        self.resizable(False, False)
+        self.configure(bg=WHITE)
+        self._build()
+
+    def _build(self):
+        W, PX = 420, 28
+
+        # ── Title ─────────────────────────────────────────────────────────────
+        tk.Label(self, text="WEATHER",
+                 font=("Helvetica", 13, "bold"),
+                 fg=TEXT_PRI, bg=BG, anchor="w"
+                 ).place(x=PX, y=28)
+
+        tk.Label(self, text="open-meteo.com",
+                 font=("Helvetica", 9),
+                 fg=TEXT_MUTED, bg=BG, anchor="e"
+                 ).place(x=0, y=32, width=W - PX)
+
+        # Top divider
+        self._div(PX, 52, W - PX*2)
+
+        # ── Search ────────────────────────────────────────────────────────────
+        sf = tk.Frame(self, bg=BG2, bd=0,
+                      highlightthickness=1,
+                      highlightbackground=DIVIDER,
+                      highlightcolor=BLACK)
+        sf.place(x=PX, y=66, width=W - PX*2, height=38)
+
+        self.city_var = tk.StringVar()
+        self.entry = tk.Entry(
+            sf, textvariable=self.city_var,
+            font=("Helvetica", 12), bg=BG2, fg=TEXT_PRI,
+            insertbackground=BLACK, relief="flat",
+            bd=8, highlightthickness=0)
+        self.entry.pack(side="left", fill="both", expand=True)
+
+        self._ph = True
+        self.entry.insert(0, "Enter city name")
+        self.entry.config(fg=TEXT_MUTED)
+        self.entry.bind("<FocusIn>",  self._clear_ph)
+        self.entry.bind("<FocusOut>", self._restore_ph)
+        self.entry.bind("<Return>",   lambda e: self._fetch())
+
+        self._btn = tk.Button(
+            sf, text="Search",
+            font=("Helvetica", 10, "bold"),
+            bg=BLACK, fg=WHITE,
+            activebackground="#333333",
+            activeforeground=WHITE,
+            relief="flat", bd=0,
+            cursor="hand2",
+            command=self._fetch,
+            padx=14)
+        self._btn.pack(side="right", fill="y")
+
+        # ── Weather display ───────────────────────────────────────────────────
+        self._div(PX, 118, W - PX*2)
+
+        # City name
+        self.city_lbl = tk.Label(
+            self, text="—",
+            font=("Helvetica", 14, "bold"),
+            fg=TEXT_PRI, bg=BG, anchor="w")
+        self.city_lbl.place(x=PX, y=130, width=W - PX*2)
+
+        self.date_lbl = tk.Label(
+            self, text="",
+            font=("Helvetica", 9),
+            fg=TEXT_MUTED, bg=BG, anchor="w")
+        self.date_lbl.place(x=PX, y=152, width=W - PX*2)
+
+        self._div(PX, 174, W - PX*2)
+
+        # Temperature (large)
+        self.temp_lbl = tk.Label(
+            self, text="—",
+            font=("Helvetica", 64, "bold"),
+            fg=TEXT_PRI, bg=BG, anchor="w")
+        self.temp_lbl.place(x=PX - 4, y=180, width=W - PX*2)
+
+        # Description + feels like on the right
+        self.desc_lbl = tk.Label(
+            self, text="",
+            font=("Helvetica", 12),
+            fg=TEXT_SEC, bg=BG, anchor="w")
+        self.desc_lbl.place(x=PX, y=262, width=W - PX*2)
+
+        self.feel_lbl = tk.Label(
+            self, text="",
+            font=("Helvetica", 10),
+            fg=TEXT_MUTED, bg=BG, anchor="w")
+        self.feel_lbl.place(x=PX, y=284, width=W - PX*2)
+
+        self._div(PX, 312, W - PX*2)
+
+        # ── Stats row ─────────────────────────────────────────────────────────
+        stats = [
+            ("Humidity",   "_st_hum"),
+            ("Pressure",   "_st_pres"),
+            ("Wind",       "_st_wind"),
+            ("Visibility", "_st_vis"),
+        ]
+        col_w = (W - PX*2) // 4
+        for i, (lbl, attr) in enumerate(stats):
+            x = PX + i * col_w
+            tk.Label(self, text=lbl,
+                     font=("Helvetica", 8),
+                     fg=TEXT_MUTED, bg=BG, anchor="w"
+                     ).place(x=x, y=322, width=col_w)
+            vl = tk.Label(self, text="—",
+                          font=("Helvetica", 12, "bold"),
+                          fg=TEXT_PRI, bg=BG, anchor="w")
+            vl.place(x=x, y=338, width=col_w)
+            setattr(self, attr, vl)
+            if i < 3:
+                tk.Frame(self, bg=DIVIDER, width=1
+                         ).place(x=x + col_w - 1, y=322, height=40)
+
+        self._div(PX, 388, W - PX*2)
+
+        # ── Sunrise / Sunset ──────────────────────────────────────────────────
+        tk.Label(self, text="Sunrise",
+                 font=("Helvetica", 8),
+                 fg=TEXT_MUTED, bg=BG, anchor="w"
+                 ).place(x=PX, y=400, width=180)
+
+        tk.Label(self, text="Sunset",
+                 font=("Helvetica", 8),
+                 fg=TEXT_MUTED, bg=BG, anchor="w"
+                 ).place(x=PX + 180, y=400, width=180)
+
+        tk.Frame(self, bg=DIVIDER, width=1
+                 ).place(x=PX + 178, y=400, height=36)
+
+        self._sv_rise = tk.Label(
+            self, text="—",
+            font=("Helvetica", 16, "bold"),
+            fg=TEXT_PRI, bg=BG, anchor="w")
+        self._sv_rise.place(x=PX, y=414, width=178)
+
+        self._sv_set = tk.Label(
+            self, text="—",
+            font=("Helvetica", 16, "bold"),
+            fg=TEXT_PRI, bg=BG, anchor="w")
+        self._sv_set.place(x=PX + 180, y=414, width=178)
+
+        self._div(PX, 460, W - PX*2)
+
+        # ── Humidity bar (plain rectangle) ────────────────────────────────────
+        tk.Label(self, text="HUMIDITY",
+                 font=("Helvetica", 7),
+                 fg=TEXT_MUTED, bg=BG, anchor="w"
+                 ).place(x=PX, y=470, width=200)
+
+        self._bar_bg = tk.Frame(self, bg=BG3, height=6)
+        self._bar_bg.place(x=PX, y=484, width=W - PX*2)
+
+        self._bar_fill = tk.Frame(self, bg=BLACK, height=6)
+        self._bar_fill.place(x=PX, y=484, width=0)
+        self._bar_w = W - PX*2
+
+        self._hum_pct = tk.Label(
+            self, text="",
+            font=("Helvetica", 8),
+            fg=TEXT_MUTED, bg=BG, anchor="e")
+        self._hum_pct.place(x=0, y=470, width=W - PX)
+
+        # ── Status ────────────────────────────────────────────────────────────
+        self._div(PX, 504, W - PX*2)
+
+        self._status = tk.Label(
+            self, text="Enter a city name above to get started",
+            font=("Helvetica", 9),
+            fg=TEXT_MUTED, bg=BG, anchor="w")
+        self._status.place(x=PX, y=516, width=W - PX*2)
+
+    # ── Divider helper ────────────────────────────────────────────────────────
+    def _div(self, x, y, w):
+        tk.Frame(self, bg=DIVIDER, height=1).place(x=x, y=y, width=w)
+
+    # ── Bar update ────────────────────────────────────────────────────────────
+    def _set_bar(self, pct):
+        self._bar_fill.place(x=28, y=484,
+                             width=int(self._bar_w * pct / 100))
+
+    # ── Placeholder ───────────────────────────────────────────────────────────
+    def _clear_ph(self, e):
+        if self._ph:
+            self.entry.delete(0, "end")
+            self.entry.config(fg=TEXT_PRI)
+            self._ph = False
+
+    def _restore_ph(self, e):
+        if not self.entry.get().strip():
+            self.entry.insert(0, "Enter city name")
+            self.entry.config(fg=TEXT_MUTED)
+            self._ph = True
+
+    # ── Fetch ─────────────────────────────────────────────────────────────────
+    def _fetch(self):
+        city = self.city_var.get().strip()
+        if not city or self._ph:
+            self._set_status("Please enter a city name.")
+            return
+        self._btn.config(text="...", state="disabled")
+        self._set_status("Searching…")
+        threading.Thread(target=self._api, args=(city,), daemon=True).start()
+
+    def _api(self, city):
+        try:
+            geo = requests.get(GEO_URL, params={
+                "name": city, "count": 1,
+                "language": "en", "format": "json"
+            }, timeout=10).json()
+
+            res = geo.get("results")
+            if not res:
+                self.after(0, self._reset_btn)
+                self.after(0, self._set_status,
+                           f"City '{city}' not found. Try a different spelling.")
+                return
+
+            r        = res[0]
+            lat, lon = r["latitude"], r["longitude"]
+            name     = r["name"]
+            state    = r.get("admin1", "")
+            country  = r.get("country", "")
+            location = f"{name}, {state}" if state else f"{name}, {country}"
+
+            self.after(0, self._set_status, "Fetching weather data…")
+
+            wx = requests.get(WEATHER_URL, params={
+                "latitude":        lat,
+                "longitude":       lon,
+                "current": [
+                    "temperature_2m", "apparent_temperature",
+                    "relative_humidity_2m", "surface_pressure",
+                    "wind_speed_10m", "visibility", "weather_code",
+                ],
+                "daily":           ["sunrise", "sunset"],
+                "wind_speed_unit": "kmh",
+                "timezone":        "auto",
+                "forecast_days":   1,
+            }, timeout=10).json()
+
+            self.after(0, self._render, wx, location)
+
+        except requests.exceptions.ConnectionError:
+            self.after(0, self._reset_btn)
+            self.after(0, self._set_status, "No internet connection.")
+        except requests.exceptions.Timeout:
+            self.after(0, self._reset_btn)
+            self.after(0, self._set_status, "Request timed out. Try again.")
+        except Exception as ex:
+            self.after(0, self._reset_btn)
+            self.after(0, self._set_status, f"Error: {ex}")
+
+    # ── Render ────────────────────────────────────────────────────────────────
+    def _render(self, data, location):
+        c    = data["current"]
+        d    = data.get("daily", {})
+        code = c["weather_code"]
+
+        temp     = round(c["temperature_2m"])
+        feels    = round(c["apparent_temperature"])
+        humidity = c["relative_humidity_2m"]
+        pressure = round(c["surface_pressure"])
+        wind     = round(c["wind_speed_10m"])
+        vis_m    = c.get("visibility")
+        vis_str  = f"{vis_m/1000:.1f} km" if vis_m else "N/A"
+
+        sr_raw = d.get("sunrise", [""])[0]
+        ss_raw = d.get("sunset",  [""])[0]
+        sr     = sr_raw[11:16] if len(sr_raw) >= 16 else "--:--"
+        ss     = ss_raw[11:16] if len(ss_raw) >= 16 else "--:--"
+
+        self.city_lbl.config(text=location)
+        self.date_lbl.config(text=datetime.now().strftime("%A, %d %B %Y"))
+        self.temp_lbl.config(text=f"{temp}°C")
+        self.desc_lbl.config(text=wmo_desc(code))
+        self.feel_lbl.config(text=f"Feels like {feels}°C")
+
+        self._st_hum.config(text=f"{humidity}%")
+        self._st_pres.config(text=f"{pressure}")
+        self._st_wind.config(text=f"{wind} km/h")
+        self._st_vis.config(text=vis_str)
+
+        self._sv_rise.config(text=sr)
+        self._sv_set.config(text=ss)
+
+        self._set_bar(humidity)
+        self._hum_pct.config(text=f"{humidity}%")
+
+        self._reset_btn()
+        self._set_status(
+            f"Updated {datetime.now().strftime('%H:%M:%S')}  ·  open-meteo.com")
+
+    def _reset_btn(self):
+        self._btn.config(text="Search", state="normal")
+
+    def _set_status(self, msg):
+        self._status.config(text=msg)
+
+
+if __name__ == "__main__":
+    app = WeatherApp()
+    app.mainloop()
